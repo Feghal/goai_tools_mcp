@@ -1,0 +1,42 @@
+{
+  "plants": {
+    "snake": { "name": "Snake plant", "baseDays": 18 },
+    "zz": { "name": "ZZ plant", "baseDays": 18 },
+    "aloe": { "name": "Aloe vera", "baseDays": 16 },
+    "jade": { "name": "Jade plant", "baseDays": 16 },
+    "echeveria": { "name": "Echeveria", "baseDays": 18 },
+    "cactus": { "name": "Cactus", "baseDays": 24 },
+    "hawortia": { "name": "Haworthia", "baseDays": 18 },
+    "ponytail": { "name": "Ponytail palm", "baseDays": 20 },
+    "rubber": { "name": "Rubber plant", "baseDays": 10 },
+    "monstera": { "name": "Monstera", "baseDays": 9 },
+    "pothos": { "name": "Pothos", "baseDays": 8 },
+    "philodendron": { "name": "Philodendron", "baseDays": 8 },
+    "fiddle": { "name": "Fiddle leaf fig", "baseDays": 9 },
+    "dracaena": { "name": "Dracaena", "baseDays": 12 },
+    "yucca": { "name": "Yucca", "baseDays": 16 },
+    "schefflera": { "name": "Umbrella plant", "baseDays": 10 },
+    "spider": { "name": "Spider plant", "baseDays": 7 },
+    "peaceLily": { "name": "Peace lily", "baseDays": 6 },
+    "anthurium": { "name": "Anthurium", "baseDays": 7 },
+    "orchid": { "name": "Moth orchid", "baseDays": 7 },
+    "birdOfPara": { "name": "Bird of paradise", "baseDays": 8 },
+    "parlour": { "name": "Parlour palm", "baseDays": 9 },
+    "kentia": { "name": "Kentia palm", "baseDays": 9 },
+    "areca": { "name": "Areca palm", "baseDays": 7 },
+    "chinese": { "name": "Chinese evergreen", "baseDays": 10 },
+    "prayer": { "name": "Prayer plant", "baseDays": 5 },
+    "calathea": { "name": "Calathea", "baseDays": 4 },
+    "fern": { "name": "Boston fern", "baseDays": 4 },
+    "maidenhair": { "name": "Maidenhair fern", "baseDays": 3 },
+    "fittonia": { "name": "Nerve plant", "baseDays": 3 },
+    "begonia": { "name": "Begonia", "baseDays": 5 },
+    "africanViolet": { "name": "African violet", "baseDays": 6 }
+  },
+  "factors": {
+    "potSize": [["small", 0.7], ["medium", 1], ["large", 1.35]],
+    "potMaterial": [["terracotta", 0.75], ["plastic", 1], ["glazed", 1.05]],
+    "light": [["bright", 0.8], ["indirect", 1], ["low", 1.3]],
+    "season": [["spring", 1], ["summer", 0.8], ["autumn", 1.1], ["winter", 1.6]]
+  }
+}

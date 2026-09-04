@@ -1,0 +1,186 @@
+# Production — CO-HOSTED with the website on one Nanode.
+#
+# There is no nginx here. The website's nginx (website_front) is the only
+# nginx on the box and is the front door for both: it serves the static site
+# off its own root and proxies /mcp-tools/* to this container over a shared
+# Docker network. Two nginxes would both want :80 and the second one to start
+# would simply fail to bind.
+#
+# Nothing here publishes a host port. The only way in is through the
+# website's nginx, which is also the only thing that terminates the
+# Cloudflare connection — so "restrict the origin to Cloudflare" stays a
+# single firewall rule on :80 rather than two.
+#
+# First deploy, once, before `up`:
+#
+#   docker network create goai_edge
+#
+# and add the same network to website_front/docker-compose.prod.yml (see
+# docs/DEPLOY.md). Then:
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  # Named for what the website's nginx dials, not for what it is inside this
+  # stack. A service name is a DNS name on a SHARED network, so the generic
+  # "web" this used to be was one `docker compose up` in a sibling stack away
+  # from resolving to somebody else's container.
+  goai-tools-mcp:
+    build:
+      context: ./goai_tools_mcp
+      dockerfile: Dockerfile.prod
+
+    # Documentation only — `expose` publishes nothing. Reachable exclusively
+    # as goai-tools-mcp:3000 from other containers on goai_edge.
+    expose:
+      - "3000"
+
+    container_name: goai-tools-mcp
+
+    env_file:
+      - .env.prod
+
+    networks:
+      # The bridge this stack would get anyway. Keeping it means a future
+      # sidecar (a metrics exporter, a one-shot maintenance container) talks
+      # to this service privately rather than over the shared edge network.
+      - default
+      # The shared network with the website stack. External: created by hand
+      # and owned by neither compose project, so `docker compose down` in
+      # either one cannot take the other's networking with it.
+      - goai_edge
+
+    volumes:
+      # Generated files (screenshot ZIPs, icon sets, GIFs) live on a named
+      # volume so an in-flight download link survives a container restart.
+      # They do NOT need to survive a redeploy — everything here is
+      # disposable and expires on its own TTL (OUTPUT_TTL_MS).
+      #
+      # The path must match OUTPUT_STORE_DIR, which defaults to /data/outputs
+      # when NODE_ENV=production (utils/outputStore.js), and which
+      # Dockerfile.prod creates node-owned so the non-root runtime user can
+      # write to the volume Docker seeds from it. Get this wrong and output
+      # silently lands in the container's ephemeral layer while this volume
+      # sits empty.
+      - tool_outputs:/data/outputs
+
+    # ── Guardrails ──
+    # This endpoint is public and unauthenticated on the box that serves the
+    # website. Every number below exists so that the worst a caller can do is
+    # make their own request slow.
+    #
+    # The front door carries the other half of this budget and the two halves
+    # are arithmetically joined, so they have to move together. The
+    # `location ^~ /mcp-tools` block in website_front/nginx/nginx.conf admits
+    # at most 4 concurrent requests per caller, 16 concurrent in total, and
+    # 20 requests/second per caller, refusing the rest with 429. That 16 is
+    # derived FROM mem_limit below — 400 MB cap, 140 MB idle, ~15 MB of parse
+    # overhead per in-flight max-size request — so raising mem_limit without
+    # raising limit_conn wastes the memory, and raising limit_conn without
+    # raising mem_limit buys an OOM kill. Change one, re-derive the other.
+    #
+    # What those caps do NOT do is make concurrency safe. They bound how MANY
+    # calls are in flight, never how heavy any one of them is: two
+    # simultaneous max-size video calls still OOM-kill this container
+    # (measured, 2/2), and 16 is a long way above 2. That remains a "what
+    # this cannot do" in docs/DEPLOY.md, not something the front door fixed.
+
+    # 400 MB, from the box's budget: 1024 MB total, ~450 MB reserved for the
+    # OS, the dockerd daemon and the website's nginx, leaving ~570 MB. 400 MB
+    # of that is this container and the remaining ~170 MB is slack, because a
+    # kernel that has to choose between OOM-killing this container and
+    # OOM-killing nginx must always have the easy answer available.
+    #
+    # Measured against the real linux/amd64 image: 140 MB idle, ~198 MB
+    # resting inside a request, 326 MB at the worst legal call. That is 74 MB
+    # of headroom on a single call. It is NOT enough headroom for two
+    # concurrent heavy calls — see "What this cannot do" in docs/DEPLOY.md.
+    #
+    # The 260 MB between the 140 MB idle floor and this cap is also what sets
+    # the front door's global limit_conn of 16: 260 / ~15 MB per in-flight
+    # max-size request. Move this number and that one is stale.
+    mem_limit: 400m
+
+    # Without this, `mem_limit` is not a limit: the cgroup falls back to
+    # unlimited swap and a runaway tool thrashes the Nanode's swap partition
+    # instead of being killed. Equal to mem_limit means zero swap allowance.
+    memswap_limit: 400m
+
+    # 75% of the one shared vCPU. The app is single-threaded JavaScript and
+    # every ffmpeg invocation is pinned to `-threads 1`, so this container
+    # cannot use more than one CPU no matter what — the quota only bites
+    # while a tool is actually burning CPU, which is exactly when nginx needs
+    # to be able to answer a page request without waiting behind it.
+    #
+    # The cost is real and worth stating: a CPU-bound tool call takes ~33%
+    # longer than it would unthrottled, against a 125 s hard ceiling at the
+    # Cloudflare edge. If wall clock turns out to be the binding constraint
+    # on the real box, this is the knob — raise it to 0.9 before touching any
+    # per-tool bound, and re-run the timing check in docs/DEPLOY.md.
+    cpus: 0.75
+
+    # Belt and braces for the quota above. CFS shares only matter under
+    # contention, and under contention this is precisely the priority we
+    # want: the website's nginx (default 1024 shares) outranks the tool
+    # server 2:1. A visitor reading a blog post should never wait on
+    # somebody's GIF conversion.
+    cpu_shares: 512
+
+    # ffmpeg is the only thing here that forks, and it forks once per call,
+    # and the front door now puts a real ceiling under that: at most 16 calls
+    # are ever in flight. So the honest worst case is 16 ffmpeg children of a
+    # few threads apiece — this cgroup counts threads, not processes — plus
+    # Node's own dozen or so (V8 platform workers and the libuv pool) and the
+    # healthcheck's curl. Call it 100. 256 leaves ~2.5x over that and still
+    # turns "some dependency spawns unboundedly" from a dead box into a
+    # failed request.
+    pids_limit: 256
+
+    restart: unless-stopped
+
+    # 10 MB x 3 files x 1 container = 30 MB worst case on a 25 GB disk shared
+    # with the website. The access log writes one line per request including
+    # the tool name, so a public endpoint under load rotates fast; without a
+    # cap json-file logging grows until the disk the website is served from
+    # is full.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # GET / is the health endpoint: unauthenticated even when MCP_API_KEY is
+    # set, and skipped by the rate limiter, so a probe every 30s can never
+    # consume a caller's budget. It dials 127.0.0.1 inside the container, so
+    # it also never meets the front door's limits — a saturated /mcp-tools
+    # must not be able to make this container look dead.
+    #
+    # The timings are deliberately slack. A heavy tool blocks the Node event
+    # loop for tens of seconds, during which this probe cannot be answered at
+    # all — with the stock 3s/3-retries it would report "unhealthy" every
+    # time somebody converted a video. 10s x 5 retries means the loop has to
+    # be blocked for ~2.5 minutes before the status flips, which the per-tool
+    # bounds and the 90s hard deadline in video-gif.js already make
+    # impossible.
+    #
+    # Note this status is advisory: `restart: unless-stopped` does not
+    # restart an unhealthy container (only an orchestrator does). It exists
+    # so `docker compose ps` tells the truth, not to trigger anything.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+networks:
+  # Created by hand (`docker network create goai_edge`) rather than by
+  # either compose project, so neither `docker compose down` can delete the
+  # network the other one is using. Both stacks declare it external and join
+  # it; the website's nginx resolves `goai-tools-mcp` on it by service name.
+  goai_edge:
+    external: true
+    name: goai_edge
+
+volumes:
+  tool_outputs:

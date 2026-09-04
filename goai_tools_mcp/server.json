@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "app.goaichat/tools",
+  "title": "GO AI Tools",
+  "description": "31 no-AI developer and everyday utilities: image conversion and metadata stripping, App Store screenshot/icon/favicon generation, WCAG and OKLCH colour maths, .strings and provisioning-profile checks, plus nutrition, recipe and plant calculators. No API key, no account.",
+  "version": "1.0.0",
+  "websiteUrl": "https://goaichat.app/mcp-tools",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://goaichat.app/mcp-tools/mcp"
+    }
+  ]
+}
