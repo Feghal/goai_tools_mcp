@@ -150,13 +150,9 @@ will let requests in that the tools then refuse.
 
 ## Licence
 
-ISC, see `package.json`.
+ISC — see [`LICENSE`](LICENSE).
 
-Two sets of third-party assets are vendored, unmodified, each with its own
-notice:
-
-- `utils/vendor/libheif/` — [libheif-js](https://github.com/catdad-experiments/libheif-js),
-  for HEIC/HEIF decoding. See its `LICENSE` and `NOTICE.md`.
-- `utils/fonts/` — 22 Google Fonts faces under the
-  [SIL Open Font License 1.1](https://openfontlicense.org/), used by the
-  screenshot renderer. See `NOTICE.md`.
+Two sets of third-party assets are vendored unmodified under their own terms
+(libheif-js for HEIC decoding, and 22 Google Fonts faces under the SIL Open
+Font License 1.1 for the screenshot renderer). See
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
