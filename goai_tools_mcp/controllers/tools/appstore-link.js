@@ -3,6 +3,7 @@
 const { z } = require('zod');
 const { createCanvas } = require('@napi-rs/canvas');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const outputStore = require('../../utils/outputStore');
 
 // Ported from nginx/sites/goai/tools/app-store-link.html's inline <script>
@@ -492,6 +493,37 @@ function buildAppStoreLink(input) {
   return result;
 }
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const appStoreLinkOutputSchema = {
+  url: z.string().describe('The assembled apps.apple.com URL -- the answer most callers want.'),
+  appId: z.string().describe('The numeric app ID, whether given directly or extracted from a pasted URL.'),
+  store: z.string().describe('The two-letter storefront code the URL targets.'),
+  params: z
+    .array(
+      z.object({
+        param: z.string().describe('Query parameter name.'),
+        value: z.string().describe('Its value in the assembled URL.'),
+        meaning: z.string().describe('What that parameter does, since App Store Connect campaign parameters are not self-explanatory.'),
+      })
+    )
+    .describe('Every query parameter in the URL, explained.'),
+  qr: z
+    .object({
+      version: z.number().int().describe('QR symbol version (1-10) the encoder settled on.'),
+      moduleSize: z.number().int().describe('Symbol size in modules per side.'),
+      errorCorrection: z.string().describe('Error-correction level used.'),
+      urlByteLength: z.number().int().describe('UTF-8 byte length of the encoded URL; the version 10 ceiling is 213.'),
+      pixelSize: z.number().int().describe('Rendered PNG size in px.'),
+      scale: z.number().int().describe('Pixels per module.'),
+    })
+    .optional()
+    .describe('Details of the rendered QR code. Present only when includeQr was true -- the PNG itself comes back as a separate content block.'),
+};
+
 function register(server) {
   server.registerTool(
     'build_app_store_link',
@@ -510,6 +542,8 @@ function register(server) {
         'pt/ct or call again with includeQr:false to still get the plain URL. The storefront code ' +
         'is not checked against the list of real App Store storefronts -- a well-formed but unused ' +
         'code just will not have the app listed on it.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: appStoreLinkOutputSchema,
       inputSchema: {
         appIdOrUrl: z
           .string()

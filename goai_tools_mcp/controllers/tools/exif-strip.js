@@ -16,6 +16,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 
@@ -417,6 +418,63 @@ function analyzeAndStripImage({ image_base64: imageBase64, filename, include_cle
   return result;
 }
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const exifStripOutputSchema = {
+  recognized: z
+    .literal(true)
+    .describe('Always true here. A file that is neither a JPEG nor a PNG comes back as an error result instead, not as recognized:false.'),
+  format: z.enum(['jpeg', 'png']).describe('Which of the two supported formats the file was read as.'),
+  metadataFound: z.boolean().describe('Whether any strippable metadata was present at all.'),
+  fieldsFound: z.number().int().describe('How many individual metadata fields were read out.'),
+  fields: z
+    .array(
+      z.object({
+        field: z.string().describe('Human-readable field name, e.g. Camera make, Latitude, XMP block.'),
+        value: z.string().describe('The value as found, stringified.'),
+      })
+    )
+    .describe('Every metadata field read from the file -- this is the disclosure the caller is usually checking for.'),
+  make: z.string().nullable().describe('Camera make, when EXIF carried one.'),
+  model: z.string().nullable().describe('Camera model, when EXIF carried one.'),
+  gps: z
+    .object({
+      latitude: z.number().describe('Latitude in decimal degrees, to 6 places.'),
+      longitude: z.number().describe('Longitude in decimal degrees, to 6 places.'),
+      altitudeMeters: z.number().nullable().describe('Altitude in metres, when recorded.'),
+      dateStamp: z.string().nullable().describe('GPS date stamp, when recorded.'),
+    })
+    .nullable()
+    .describe('Embedded location, or null when the file carried none. The single most sensitive thing in a photo, so it is surfaced on its own rather than only inside fields.'),
+  rotationWarning: z
+    .boolean()
+    .describe('True when an EXIF Orientation tag was removed, which can make the cleaned image appear rotated in viewers that relied on it.'),
+  removedSegments: z
+    .array(
+      z.object({
+        label: z.string().describe('Which segment or chunk was removed, e.g. EXIF, XMP, a PNG tEXt chunk.'),
+        sizeBytes: z.number().int().describe('Its size in bytes.'),
+      })
+    )
+    .describe('Each metadata segment or chunk that was stripped, with its size.'),
+  removedSegmentCount: z.number().int().describe('Number of segments/chunks removed.'),
+  originalSizeBytes: z.number().int().describe('Size of the supplied file in bytes.'),
+  cleanedSizeBytes: z.number().int().nullable().describe('Size of the cleaned file, or null when no cleaned image was produced.'),
+  removedBytes: z.number().int().nullable().describe('Bytes saved by stripping, or null when no cleaned image was produced.'),
+  verified: z
+    .boolean()
+    .nullable()
+    .describe('Result of the byte-for-byte check that the retained image data is unchanged. Null when no cleaning was attempted; false means the check failed and no cleaned file was returned.'),
+  verifiedBytes: z.number().int().nullable().describe('How many bytes that check compared. Null when no cleaning was attempted.'),
+  cleanedImageIncluded: z
+    .boolean()
+    .describe('Whether a cleaned file accompanies this report as a content block. False when include_cleaned_image was off, when there was nothing to strip, or when verification failed.'),
+  message: z.string().describe('Plain-language summary, including why no cleaned file was returned when that is the case.'),
+};
+
 function register(server) {
   server.registerTool(
     'strip_image_metadata',
@@ -424,6 +482,8 @@ function register(server) {
       title: 'Strip image metadata (EXIF/GPS/XMP/IPTC/PNG text)',
       description:
         "Reads a JPEG or PNG's hidden metadata (JPEG: EXIF — camera make/model, lens, body/lens serial numbers, capture date, GPS coordinates and altitude — plus XMP, IPTC/Photoshop resources and comment segments; PNG: tEXt/iTXt/zTXt/eXIf/tIME chunks) and returns a structured report of exactly what it found, including the size of every metadata segment/chunk that was removed. Optionally (include_cleaned_image, default true) also returns the same image with those segments/chunks stripped at the byte level: no re-encoding and no pixel decode, so the compressed image data, ICC profile, and JFIF/PNG structure are copied unchanged. It runs a byte-for-byte self-check that the retained image data is actually unchanged before handing back a cleaned file — if that check fails, no cleaned file is returned even though the report is still produced. Only JPEG and PNG signatures are recognized (not TIFF or other formats); stripping a photo's EXIF Orientation tag can make it appear rotated, which the report flags.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: exifStripOutputSchema,
       inputSchema: {
         image_base64: z.string().min(1).describe('Base64-encoded bytes of the JPEG or PNG file to inspect.'),
         filename: z

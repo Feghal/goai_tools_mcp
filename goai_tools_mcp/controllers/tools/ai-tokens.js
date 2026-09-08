@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 
 // estimateTokens() below runs FOUR global .match() passes over the input.
@@ -163,6 +164,51 @@ function estimateAiTokens(input) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const aiTokensOutputSchema = {
+  tokens: z.number().int().describe('Estimated token count for the text.'),
+  characters: z.number().int().describe('Character count of the input text.'),
+  words: z.number().int().describe('Whitespace-delimited word count.'),
+  charsPerToken: z.number().describe('Characters divided by tokens -- the density that drives the accuracy band.'),
+  readingTime: z
+    .object({
+      underOneMinute: z.boolean().describe('True when the text reads in under a minute, in which case minutes is null.'),
+      minutes: z.number().nullable().describe('Whole minutes to read at an average pace, or null when underOneMinute is true.'),
+    })
+    .describe('How long the text takes a person to read, as a sanity check on the size.'),
+  accuracyBand: z
+    .object({
+      level: z.string().describe('How trustworthy this estimate is for text of this kind.'),
+      approxRange: z.string().describe('The expected error range, e.g. a percentage spread.'),
+      note: z.string().describe('What about the text put it in this band, and which way it is likely to be wrong.'),
+    })
+    .describe('An honesty bound on the token count: this is a heuristic, not a real tokenizer, and the band says how far off it usually is.'),
+  contextFit: z
+    .array(
+      z.object({
+        name: z.string().describe('Name of the context window being checked against.'),
+        sizeTokens: z.number().int().describe('That window\'s size in tokens.'),
+        percentUsed: z.number().describe('What percentage of the window the text would occupy.'),
+        fits: z.boolean().describe('Whether the text fits at all.'),
+        comfortable: z.boolean().describe('Whether it fits with enough headroom left for a useful reply.'),
+        verdict: z.string().describe("One-word summary, e.g. 'fits' or 'over'."),
+        overByTokens: z.number().nullable().describe('How many tokens too long the text is, or null when it fits.'),
+      })
+    )
+    .describe('The text measured against each context window, so the caller sees which models it fits.'),
+  cost: z
+    .object({
+      inputCost: z.number().nullable().describe('USD to send this text, or null when no input price was supplied.'),
+      outputCost: z.number().nullable().describe('USD for the expected output, or null when no output price was supplied.'),
+      totalCost: z.number().nullable().describe('Input plus output, multiplied by calls. Null when either price was omitted.'),
+    })
+    .describe('Projected spend. Every field is null unless the matching per-million price was supplied.'),
+};
+
 function register(server) {
   server.registerTool(
     'estimate_ai_tokens',
@@ -170,6 +216,8 @@ function register(server) {
       title: 'Estimate AI token count, context fit & cost',
       description:
         "Heuristic estimate (NOT a real per-model BPE tokenizer) of how many tokens a piece of text will become, ported from GO AI's browser-side token counter. Blends a chars/4 and words/0.75 baseline with surcharges for punctuation, digits and non-Latin script; typically within ±10-15% for ordinary English prose and ±15-25% when non-Latin script is detected -- code and heavily punctuated text tend to tokenize denser than this suggests. Also reports whether the text fits a set of context windows (default: 8K/128K/200K/1M/2M tokens, or pass your own) and, if you supply per-million-token prices, an estimated USD cost. Use a provider's own tokenizer for exact billing figures.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: aiTokensOutputSchema,
       inputSchema: {
         text: z
           .string()

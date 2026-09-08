@@ -1,6 +1,7 @@
 'use strict';
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // English UI strings mirrored verbatim from the source's
 // <script type="application/json" id="clamp-strings"> block (nginx/sites/goai/tools/clamp.html).
@@ -126,6 +127,52 @@ function computeClamp(input) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const clampOutputSchema = {
+  status: z
+    .enum(['ok', 'sameViewports', 'flat', 'inverted'])
+    .describe(
+      "'ok' for a normal fluid size; 'sameViewports' when the two viewport widths match, so no line can be drawn and css is null; 'flat' when both sizes are equal (a constant, clamp() unneeded); 'inverted' when the max size is below the min, which is valid CSS that shrinks as the viewport grows."
+    ),
+  note: z.string().describe('Human-readable explanation of a non-ok status, or an empty string when status is ok.'),
+  css: z
+    .string()
+    .nullable()
+    .describe('The finished CSS clamp() declaration in rem, or null when status is sameViewports.'),
+  math: z
+    .object({
+      minRem: z.number().describe('Lower bound of the clamp, in rem.'),
+      maxRem: z.number().describe('Upper bound of the clamp, in rem.'),
+      interceptRem: z.number().describe('The constant rem term of the middle (preferred) expression.'),
+      slopeVw: z.number().describe('The vw coefficient of the middle expression, i.e. rem gained per 1% of viewport width.'),
+    })
+    .nullable()
+    .describe('The four numbers the css string is assembled from, each rounded to 4 decimal places. Null when status is sameViewports.'),
+  preview: z
+    .array(
+      z.object({
+        viewportPx: z.number().describe('The viewport width that was evaluated, echoed from previewViewportsPx.'),
+        computedSizePx: z.number().describe('What the clamp() resolves to at that width, in px, rounded to 2 decimals.'),
+      })
+    )
+    .describe('One entry per requested preview viewport, in the order given. Empty when previewViewportsPx was omitted.'),
+  scale: z
+    .array(
+      z.object({
+        step: z.number().int().describe('1-based step index in the scale.'),
+        ratioApplied: z.number().describe('ratio raised to (step - 1), the multiplier applied to both endpoints.'),
+        minSizePx: z.number().describe('This step\'s size at the small viewport, in px.'),
+        maxSizePx: z.number().describe('This step\'s size at the large viewport, in px.'),
+        css: z.string().describe('The clamp() declaration for this step.'),
+      })
+    )
+    .describe('The fluid type scale, one entry per step. Empty when typeScale was omitted or no step could be built.'),
+};
+
 function register(server) {
   server.registerTool(
     'css_clamp_calculator',
@@ -133,6 +180,8 @@ function register(server) {
       title: 'CSS clamp() Calculator',
       description:
         "Generates a CSS clamp() declaration (in rem) that linearly interpolates a size between a value at a small viewport width and a value at a large one, exactly matching GO AI's clamp() calculator tool (same slope/intercept math, rounded to 4 decimal places). Returns a status: 'sameViewports' when the two viewport widths are equal (no line can be drawn -- css is null), 'flat' when the min and max sizes are equal (a constant, clamp() unneeded), 'inverted' when the max size is smaller than the min (still valid CSS, but the computed size shrinks as the viewport grows), or 'ok' otherwise. Optionally evaluates the computed pixel size at a list of preview viewport widths, and optionally generates a matched fluid type scale by multiplying both endpoints by ratio^step for a given number of steps -- unlike the website's five-option dropdown, any positive ratio is accepted here since the underlying math is not limited to those presets.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: clampOutputSchema,
       inputSchema: {
         minSizePx: z.number().describe('Size in px at the small viewport.'),
         minViewportPx: z.number().describe('The small viewport width in px.'),

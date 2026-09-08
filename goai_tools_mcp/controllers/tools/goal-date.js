@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported from nginx/sites/goai/tools/goal-date.html's inline <script>. The
 // page holds a fixed daily intake and recomputes Mifflin-St Jeor maintenance
@@ -193,6 +194,59 @@ function computeGoalDateProjection(input) {
   return result;
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const goalDateOutputSchema = {
+  currentWeightKg: z.number().describe('Starting weight in kg, after any imperial conversion.'),
+  goalWeightKg: z.number().describe('Target weight in kg, after any imperial conversion.'),
+  activityMultiplier: z.number().describe('The multiplier the chosen activity level maps to.'),
+  maintenanceKcal: z.number().describe('Maintenance calories at the starting weight.'),
+  intakeKcal: z.number().describe('Daily intake implied by the requested deficit, after the safety floor is applied.'),
+  floorKcal: z.number().describe('The intake floor that was enforced, below which the projection is not modelled.'),
+  status: z
+    .string()
+    .describe('How the projection ended: the goal is reached, or it settles short of the goal, or it is unreachable at this intake. The field to branch on before reading the dates.'),
+  settleWeightKg: z
+    .number()
+    .nullable()
+    .describe('The weight this intake eventually settles at, since maintenance falls as weight does. Null when it does not apply.'),
+  plateau: z
+    .boolean()
+    .nullable()
+    .describe('True when the settle weight is above the goal, i.e. this deficit alone will never get there. Null when it does not apply.'),
+  reachedWithinHorizon: z.boolean().describe('Whether the goal is reached inside the modelled horizon.'),
+  horizonDays: z.number().nullable().describe('Length of the modelled horizon in days, or null when not modelled.'),
+  naiveDays: z
+    .number()
+    .nullable()
+    .describe('Days predicted by the flat 7,700 kcal-per-kg rule that ignores the falling maintenance -- the figure most calculators stop at.'),
+  naiveWeeks: z.number().nullable().describe('The same figure in whole weeks.'),
+  daysToGoal: z.number().nullable().describe('Days to the goal under the adaptive model, or null when the goal is never reached.'),
+  weeksToGoal: z.number().nullable().describe('The same figure in whole weeks.'),
+  gapDays: z
+    .number()
+    .nullable()
+    .describe('How many days longer the honest answer is than the naive one -- the whole point of the tool. Null when the goal is never reached.'),
+  projectedDate: z.string().nullable().describe('Calendar date the goal is reached, ISO YYYY-MM-DD, or null when it is not reached.'),
+  note: z.string().describe('Plain-language reading of the result, including why the two answers differ or why the goal is unreachable.'),
+  series: z
+    .array(
+      z.object({
+        weekIndex: z.number().int().describe('Weeks from the reference date.'),
+        weightKg: z.number().describe('Projected weight at that week under the adaptive model.'),
+      })
+    )
+    .nullable()
+    .describe('Weekly projection points for plotting. Null when includeChartSeries was false.'),
+  naiveLineEndWeek: z
+    .number()
+    .nullable()
+    .describe('Where the naive straight line would end on the same axes, so the two can be drawn together. Null when there is no series.'),
+};
+
 function register(server) {
   server.registerTool(
     'project_weight_goal_date',
@@ -200,6 +254,8 @@ function register(server) {
       title: 'Weight loss goal-date projector',
       description:
         "Projects the calendar date a goal body weight is reached under a fixed daily calorie intake. Unlike a naive straight-line calculator (kg to lose x 7700 / deficit, also returned here for comparison), this recomputes Mifflin-St Jeor maintenance calories at each simulated day as weight falls, so the effective deficit narrows the way it really does -- meaning the projected date is later than, or equal to, the naive one, never earlier. Refuses to project a date when the resulting intake falls below a 1500 kcal (men) / 1200 kcal (women) floor, and reports a 'plateau' outcome instead of a date when the goal sits at or below the weight where maintenance would settle at that intake (an asymptote that a fixed intake alone can never cross). Adult-only inputs (18+); only projects weight loss (goalWeight must be less than currentWeight).",
+      annotations: toolAnnotations.PURE,
+      outputSchema: goalDateOutputSchema,
       inputSchema: z
         .object({
           sex: z.enum(['male', 'female']).describe('Biological sex, used by the Mifflin-St Jeor formula.'),

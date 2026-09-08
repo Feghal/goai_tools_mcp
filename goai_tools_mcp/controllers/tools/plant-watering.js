@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const icsWriter = require('../../utils/icsWriter');
 const DATA = require('../../utils/data/plant-watering.json');
 
@@ -207,6 +208,41 @@ const inputSchema = z.object({
     .describe("First reminder date, YYYY-MM-DD. Every plant's recurring event starts on this same date, each with its own repeat interval. Defaults to today."),
 });
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const plantWateringOutputSchema = {
+  schedule: z
+    .array(
+      z.object({
+        key: z.string().describe('Stable identifier for the plant, as given in the input.'),
+        name: z.string().describe('The plant\'s common name.'),
+        intervalDays: z.number().describe('Days between waterings after every adjustment -- the number to act on.'),
+        baseDays: z.number().describe('The plant\'s baseline interval before pot, light and season adjustments.'),
+        multiplier: z.number().describe('The combined adjustment applied to baseDays, so the difference is auditable rather than magic.'),
+      })
+    )
+    .describe('One entry per requested plant, in catalogue order.'),
+  summary: z
+    .object({
+      chosenCount: z.number().int().describe('How many plants were scheduled.'),
+      minIntervalDays: z.number().describe('The thirstiest plant\'s interval -- the cadence that actually governs a shared watering round.'),
+      maxIntervalDays: z.number().describe('The longest interval in the set.'),
+      seasonFactor: z.number().describe('The season multiplier applied to every plant.'),
+    })
+    .describe('The set at a glance, for deciding a single watering day.'),
+  calendar: z
+    .object({
+      filename: z.string().describe('Suggested filename for the calendar file.'),
+      mimeType: z.string().describe('MIME type of icsText, i.e. text/calendar.'),
+      icsText: z.string().describe('A complete iCalendar document with a repeating event per plant, ready to write to a file and import.'),
+    })
+    .describe('The schedule as a subscribable calendar. Returned inline as text, not as a file download.'),
+  note: z.string().describe('Standing caution that these intervals are a starting point to adjust against the actual soil.'),
+};
+
 function register(server) {
   server.registerTool(
     'plant_watering_calendar',
@@ -214,6 +250,8 @@ function register(server) {
       title: 'Plant watering calendar (.ics)',
       description:
         "Builds a soil-check interval per houseplant from a fixed drought-tolerance table (32 common houseplants), adjusted by pot size, pot material, light and season, and returns both a schedule breakdown and the full text of a downloadable RFC 5545 .ics calendar file -- one recurring all-day 'check the soil' reminder per plant (deliberately never 'water', since only the plant's own soil can say that). Matches GO AI's browser watering-calendar tool exactly, including its northern-hemisphere-season default when `season` is omitted, its terracotta/glazed/low-light/winter multipliers, and its 75-octet .ics line folding. The starting intervals are heuristic drought-tolerance bands, not a measurement of any specific plant, pot or room -- the tool says so in its own FAQ.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: plantWateringOutputSchema,
       inputSchema,
     },
     async (args) => {

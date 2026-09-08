@@ -3,6 +3,7 @@
 const { z } = require('zod');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 const { zip } = require('../../utils/zip');
@@ -727,6 +728,27 @@ const inputShape = {
     .describe(`Which official App Store Connect size to export: 6.9"/6.7"/6.5" iPhone or 13" iPad, or "all" for every size (returned as a ZIP). "all" renders 4 canvases per page, so it is limited to ${ALL_SIZES_MAX_PAGES} pages per call; for a longer set, make one call per size — a single-size call carries all ${LIMITS.MAX_PAGES}.`),
 };
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const screenshotOutputSchema = {
+  sizesRendered: z
+    .array(
+      z.object({
+        key: z.string().describe('Identifier for the device size, matching the size input.'),
+        label: z.string().describe('Human-readable device name for this size.'),
+        width: z.number().int().describe('Canvas width in px, i.e. the exact pixel size App Store Connect expects.'),
+        height: z.number().int().describe('Canvas height in px.'),
+        pageCount: z.number().int().describe('How many pages were rendered at this size.'),
+      })
+    )
+    .describe(
+      'One entry per rendered device size. The images themselves come back as separate content blocks -- a single render inline, a multi-page or multi-size batch as a ZIP behind a resource_link.'
+    ),
+};
+
 function register(server) {
   server.registerTool(
     'render_app_store_screenshot',
@@ -745,6 +767,8 @@ function register(server) {
         `${LIMITS.MAX_IMAGE_PIXELS / 1e6} MP per screenshot and ${LIMITS.MAX_TOTAL_IMAGE_BYTES / 1e6} MB of ` +
         `screenshot bytes summed across the whole call (send JPEG, not PNG, for a multi-page set); and at most ` +
         `${LIMITS.MAX_TEXTS} text layers of ${LIMITS.MAX_TEXT_CHARS} characters each.`,
+      annotations: toolAnnotations.PURE,
+      outputSchema: screenshotOutputSchema,
       inputSchema: inputShape,
     },
     async (args) => {

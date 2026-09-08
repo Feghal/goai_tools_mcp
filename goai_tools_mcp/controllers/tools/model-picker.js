@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported from nginx/sites/goai/tools/model-picker.html's <script id="picker-data">
 // JSON block plus the render() function beneath it. The source is a static
@@ -245,6 +246,25 @@ function recommendAiModel({ task, priority }) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const modelPickerOutputSchema = {
+  modelKey: z.string().describe('Stable identifier for the recommended model, safe to switch on.'),
+  model: z.string().describe('The recommended model\'s display name.'),
+  tag: z.string().describe('Short label for why this model wins the task, e.g. its standout strength.'),
+  taskLabel: z.string().describe('Human-readable name of the task that was matched.'),
+  why: z.string().describe('The reasoning behind the recommendation.'),
+  backup: z.string().describe('A second choice worth trying if the first does not suit.'),
+  adjusted: z
+    .boolean()
+    .describe('True when the stated priority (cost or freshness) moved the answer away from the quality-first pick.'),
+  note: z.string().nullable().describe('What that adjustment was, when adjusted is true; otherwise null.'),
+  disclaimer: z.string().describe('Standing note that this is a fixed editorial table, not a live benchmark.'),
+};
+
 function register(server) {
   server.registerTool(
     'recommend_ai_model',
@@ -252,6 +272,8 @@ function register(server) {
       title: 'Recommend which AI model to use for a task',
       description:
         "Static editorial recommendation -- NOT a live benchmark or leaderboard -- for which of six AI models (GPT-5, Gemini, Grok 4, Claude, DeepSeek, Kimi) to use for a given kind of task, ported from GO AI's own daily side-by-side-use judgement, current as of August 2026. Pick a task and get the recommended model plus the reasoning and a second-opinion backup. The optional `priority` can bias the pick toward cost (routes to DeepSeek) or freshness (routes to Grok) instead of the default quality pick -- but only for tasks where that tradeoff is actually offered; otherwise the quality default is returned unchanged. This reflects one team's opinion, not measured accuracy or pricing data.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: modelPickerOutputSchema,
       inputSchema: {
         task: z
           .enum(TASK_IDS)

@@ -3,6 +3,7 @@
 const { z } = require('zod');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 const { zip } = require('../../utils/zip');
@@ -244,6 +245,44 @@ async function generateAppIconSet(input) {
   };
 }
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const appIconOutputSchema = {
+  source: z
+    .object({
+      width: z.number().int().describe('Source image width in px.'),
+      height: z.number().int().describe('Source image height in px.'),
+    })
+    .describe('Dimensions of the image that was supplied, before squaring.'),
+  hadAlpha: z
+    .boolean()
+    .describe('True when the source carried transparency, which was flattened onto backgroundColor because Apple rejects icons with alpha.'),
+  variants: z.enum(['none', 'dark', 'all']).describe('Which appearance variants were generated, echoed from the input.'),
+  backgroundColor: z.string().describe('The colour transparency was flattened onto, and the letterbox colour for a non-square source.'),
+  filesOut: z.number().int().describe('Total number of files inside the ZIP.'),
+  warnings: z
+    .object({
+      notSquare: z.string().nullable().describe('Set when the source was not square and had to be letterboxed onto a square canvas; null when it was already square.'),
+      small: z.string().nullable().describe('Set when the source was under 1024px on its longest side, so the largest icons are upscaled; null when it was big enough.'),
+    })
+    .describe('Non-fatal quality warnings. Both are null on an ideal 1024px square source -- neither stops the ZIP being produced.'),
+  files: z
+    .array(
+      z.object({
+        where: z.string().describe('Which part of the set this file belongs to (the Xcode appiconset, an Android mipmap bucket, or the flat sizes folder).'),
+        path: z.string().describe('Path of the file inside the ZIP.'),
+        // Contents.json is a file in the set like any other, and it has no
+        // pixel dimensions -- hence nullable rather than a separate row shape.
+        width: z.number().int().nullable().describe('Width in px, or null for a non-image entry such as Contents.json.'),
+        height: z.number().int().nullable().describe('Height in px, or null for a non-image entry such as Contents.json.'),
+      })
+    )
+    .describe('Every file in the archive, so the contents can be checked without unzipping it.'),
+};
+
 function register(server) {
   server.registerTool(
     'generate_app_icon_set',
@@ -267,6 +306,8 @@ function register(server) {
         'the file count, and two non-fatal warnings when the source was not square or not exactly ' +
         '1024px on its longest side. Always returns as a resource_link (a 30+ file ZIP is never ' +
         'small enough to inline) -- fetch the link to get the archive.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: appIconOutputSchema,
       inputSchema: {
         imageBase64: z
           .string()

@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported from nginx/sites/goai/tools/window-light.html's inline <script>,
 // which keeps its UI copy in a JSON strings block (id="light-strings"). The
@@ -148,6 +149,24 @@ const inputSchema = {
     ),
 };
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const windowLightOutputSchema = {
+  score: z.number().describe('The computed light score the band and verdict are derived from -- higher is brighter.'),
+  band: z.string().describe('The score bucketed into a named light level, the single field most callers want.'),
+  aspect: z.string().describe('The compass direction the window faces, echoed from the input.'),
+  solarAspect: z
+    .string()
+    .describe('That aspect mapped to its solar equivalent for the given hemisphere -- a south-facing window means the opposite thing north and south of the equator.'),
+  verdict: z.string().describe('One-line summary of what this window is good for.'),
+  verdictSub: z.string().describe('A supporting line qualifying the verdict.'),
+  reasoning: z.string().describe('Why the score came out where it did, naming the aspect, glazing and distance contributions.'),
+  plants: z.string().describe('Plant types suited to this light level.'),
+};
+
 function register(server) {
   server.registerTool(
     'estimate_window_light',
@@ -155,6 +174,8 @@ function register(server) {
       title: 'Window light estimator for houseplants',
       description:
         "Estimates the indoor light level a window gives a plant, in the category words houseplant care guides use (Direct sun / Bright indirect / Medium light / Low light / Too dark), from the window's hemisphere, compass aspect, what obstructs it, and how far back the plant sits from the glass. This is a small heuristic scoring table ported from GO AI's window-light tool page, not a physical light-meter reading or a per-location sun-position model — it correctly flips which compass direction is 'bright' for the southern hemisphere and flags the direct-west-sun scorch risk, and returns the reasoning behind the verdict plus a shortlist of plants suited to that light level.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: windowLightOutputSchema,
       inputSchema,
     },
     async (args) => {

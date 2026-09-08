@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported line-for-line from nginx/sites/goai/tools/recipe.html's inline
 // <script>, plus the two JSON <script type="application/json"> blocks it
@@ -403,6 +404,39 @@ const scaleInputSchema = {
     .describe('Cup size in ml used when converting a scaled "cup"/"tbsp"/"tsp" amount to grams. Defaults to the US customary cup (236.588 ml); other common values are 240 or 250.'),
 };
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const recipeConvertOutputSchema = {
+  grams: z.number().describe('The converted weight in grams, unrounded.'),
+  gramsRounded: z.number().describe('The same weight rounded the way a kitchen scale reads it -- the number to actually use.'),
+  ounces: z.number().describe('The converted weight in ounces, unrounded.'),
+  ouncesRounded: z.number().describe('The same weight in ounces, rounded for practical use.'),
+  densityGPerMl: z.number().describe('The density used for this ingredient, in grams per millilitre.'),
+  densityGPerMlRounded: z.number().describe('That density rounded for display.'),
+  workSentence: z
+    .string()
+    .describe('The conversion written out as an equation, so the caller can check the cup size and density rather than trusting a bare number.'),
+  waterComparison: z
+    .string()
+    .describe('How this ingredient compares in weight to the same volume of water -- the intuition that explains why a cup of flour and a cup of honey are nothing alike.'),
+};
+
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const recipeScaleOutputSchema = {
+  lines: z
+    .array(z.string())
+    .describe(
+      'The ingredient lines rescaled, one output line per input line and in the same order. A line whose quantity could not be parsed is returned unchanged rather than dropped, so the list stays aligned with the recipe it came from.'
+    ),
+};
+
 function register(server) {
   server.registerTool(
     'recipe_convert_ingredient',
@@ -410,6 +444,8 @@ function register(server) {
       title: 'Cup-to-grams converter (per-ingredient density)',
       description:
         "Converts an amount of one ingredient between cup, tablespoon, teaspoon, millilitre, gram and ounce using that specific ingredient's own USDA FoodData Central portion weight, not a single water-based figure applied to everything -- a cup of flour (125 g) and a cup of honey (339 g) do not weigh the same. Supports an ingredient's own measurement-style variants where USDA publishes more than one (packed vs loose brown sugar, sifted vs unsifted powdered sugar, whole vs sliced/slivered/ground nuts, etc.), and for baking powder, baking soda and yeast uses USDA's own published teaspoon weight rather than dividing the cup weight by 48, since a spoon measurement of a fine powder is not proportionate to its cup measurement. Also reports, for information, what a generic water-density converter would have said for the same input and by how much that would have been wrong -- omitted when the requested unit is already grams or ounces.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: recipeConvertOutputSchema,
       inputSchema: ingredientInputSchema,
     },
     async (args) => {
@@ -428,6 +464,8 @@ function register(server) {
       title: 'Recipe servings scaler with gram weights',
       description:
         "Scales a pasted recipe (one ingredient per array entry, e.g. '2 cups all-purpose flour') from one servings count to another, multiplying each line's leading amount by the ratio and reformatting it as a whole number or simple/mixed fraction rather than a decimal. When a line's unit and ingredient can both be recognised against GO AI's density table, appends the scaled amount's weight in grams in parentheses; lines already given in grams or ounces, lines whose ingredient isn't recognised, and lines that don't start with a parseable amount are returned unchanged (the last completely as-is, typos included).",
+      annotations: toolAnnotations.PURE,
+      outputSchema: recipeScaleOutputSchema,
       inputSchema: scaleInputSchema,
     },
     async (args) => {

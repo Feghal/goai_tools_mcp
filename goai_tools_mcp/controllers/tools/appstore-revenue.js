@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported from website_front/nginx/sites/goai/tools/app-store-revenue.html's
 // inline <script> (render() function), using the #revenue-tax and
@@ -192,6 +193,59 @@ const inputSchema = {
     ),
 };
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const revenueOutputSchema = {
+  input: z
+    .object({
+      price: z.number().describe('The customer-facing sticker price, echoed back.'),
+      countryCode: z.string().describe('Two-letter storefront code used.'),
+      countryName: z.string().describe('That storefront\'s full name.'),
+      currencySymbol: z.string().describe('Currency symbol for the storefront -- every money figure below is in this currency.'),
+      taxRatePercent: z.number().describe('The tax rate actually applied, whether supplied or taken from the storefront default.'),
+      commissionScenario: z.string().describe('Which commission rate was applied.'),
+    })
+    .describe('What the calculation actually ran on, including the defaults that were filled in.'),
+  breakdown: z
+    .object({
+      customerPays: z.number().describe('The sticker price the customer is charged.'),
+      taxInsidePrice: z.number().describe('VAT/GST already baked into that price, removed before commission.'),
+      commissionBase: z.number().describe('The tax-exclusive remainder Apple actually takes its cut of -- not the sticker price.'),
+      appleCommission: z.number().describe('Apple\'s cut in currency.'),
+      paidToYou: z.number().describe('What the developer receives per sale.'),
+    })
+    .describe('The sticker price decomposed in the order the money is actually removed.'),
+  appleShareOfStickerPercent: z
+    .number()
+    .describe('Apple\'s commission as a percentage of the sticker price, which is lower than the headline rate because tax comes off first.'),
+  comparison: z
+    .array(
+      z.object({
+        scenario: z.string().describe('Scenario identifier.'),
+        label: z.string().describe('Human-readable name of the commission scenario.'),
+        commissionPercent: z.number().describe('Headline commission rate for that scenario.'),
+        youKeep: z.number().describe('Net per sale under that scenario.'),
+        per1000Sales: z.number().describe('Net across 1,000 sales, which is where the difference between scenarios becomes legible.'),
+      })
+    )
+    .describe('All three commission scenarios side by side, regardless of which was requested.'),
+  naiveComparison: z
+    .object({
+      commissionPercent: z.number().describe('The rate a naive calculation would apply.'),
+      naiveNet: z.number().describe('What "just take the commission off the sticker price" would predict.'),
+      actualNet: z.number().describe('What the correct tax-then-commission order actually yields.'),
+      difference: z.number().describe('How far off the naive figure is, per sale.'),
+      sameAsActual: z.boolean().describe('True when the storefront has no tax, so both methods agree.'),
+    })
+    .describe('A sanity check against the common mistake of applying commission to the tax-inclusive price.'),
+  warnings: z
+    .array(z.string())
+    .describe('Cautions about the storefront, chiefly that its real tax rate varies by province, state or category. Empty when the rate is a single fixed number.'),
+};
+
 function register(server) {
   server.registerTool(
     'calculate_app_store_net_revenue',
@@ -199,6 +253,8 @@ function register(server) {
       title: 'App Store net revenue calculator',
       description:
         "Computes what a developer actually receives from an App Store sale: first removes the storefront's VAT/GST already baked into the customer-facing sticker price, then applies Apple's commission (standard 30%, Small Business Program 15%, or the post-year-one subscription 15%) to that tax-exclusive remainder -- NOT to the sticker price itself, which is the mistake most naive calculators make. Returns a full price breakdown, the effective share of the sticker Apple actually keeps, a side-by-side comparison across all three commission rates (including per-1,000-sales figures), a naive-calculator sanity check showing how far off a 'just take the commission off the top' estimate would be, and warnings when the selected storefront's real tax rate varies by province, state or category (India, Canada, Brazil) rather than being a single fixed number.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: revenueOutputSchema,
       inputSchema,
     },
     async (args) => {

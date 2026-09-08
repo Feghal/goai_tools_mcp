@@ -427,7 +427,7 @@ describe('response amplifiers are bounded', () => {
     const { SDK_IDS } = require('../controllers/tools/privacy-label');
     const { PLANT_IDS } = require('../controllers/tools/plant-watering');
 
-    const privacy = schemaOf('../controllers/tools/privacy-label', 'goai_build_app_privacy_label');
+    const privacy = schemaOf('../controllers/tools/privacy-label', 'build_app_privacy_label');
     expect(privacy.safeParse({ items: new Array(SDK_IDS.length + 1).fill(SDK_IDS[0]) }).success).toBe(false);
     expect(privacy.safeParse({ items: [SDK_IDS[0], SDK_IDS[1]] }).success).toBe(true);
 

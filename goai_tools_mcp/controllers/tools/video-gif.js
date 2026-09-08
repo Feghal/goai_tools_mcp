@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const ffmpegPath = require('ffmpeg-static');
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 const gifEncoder = require('../../utils/gifEncoder');
@@ -682,6 +683,38 @@ async function convertVideoToGif(rawInput) {
   }
 }
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const videoGifOutputSchema = {
+  format: z.enum(['gif', 'mp4', 'webm']).describe('Output format. This field decides which of the conditional fields below are present.'),
+  width: z.number().int().describe('Output width in px.'),
+  height: z.number().int().describe('Output height in px.'),
+  byteSize: z.number().int().describe('Size of the produced file in bytes.'),
+  requestedFps: z.number().describe('The frame rate that was asked for.'),
+  actualFps: z
+    .number()
+    .describe('The frame rate actually achieved, which can differ because frames are sampled by ffmpeg\'s fps filter rather than seeking to exact times.'),
+  motion: z.enum(['loop', 'bounce', 'once']).describe('Playback behaviour applied.'),
+  speed: z.number().describe('Speed multiplier applied to the source.'),
+  outputPixels: z.number().int().describe('Width x height x frames -- the bound that actually governs this tool\'s memory use.'),
+  maxOutputPixels: z.number().int().describe('The ceiling outputPixels was checked against, so a rejection is explicable from the result.'),
+  // The GIF encoder and the mp4/webm transcode report different things, and
+  // the handler returns one shape or the other -- so everything below is
+  // conditional on `format` rather than always present.
+  frameCount: z.number().int().optional().describe('Number of frames encoded. GIF output only.'),
+  delayCentiseconds: z.number().optional().describe('Per-frame delay written into the GIF, in centiseconds. GIF output only.'),
+  maxColors: z.number().int().optional().describe('Palette size the median-cut quantiser was allowed. GIF output only.'),
+  dither: z.boolean().optional().describe('Whether dithering was applied during quantisation. GIF output only.'),
+  trimStart: z.number().optional().describe('Start of the trimmed span in seconds. GIF output only.'),
+  trimEnd: z.number().optional().describe('End of the trimmed span in seconds. GIF output only.'),
+  trimSpan: z.number().optional().describe('Length of the trimmed span in seconds. GIF output only.'),
+  durationSeconds: z.number().optional().describe('Duration of the produced clip in seconds. mp4/webm output only.'),
+  audio: z.string().optional().describe('What happened to the source audio track. mp4/webm output only.'),
+};
+
 function register(server) {
   server.registerTool(
     'convert_video_to_gif',
@@ -704,6 +737,8 @@ function register(server) {
         "For format 'mp4' (H.264) or 'webm' (VP9): frame sampling and the GIF palette pipeline are skipped entirely and ffmpeg encodes the trimmed/scaled/speed-adjusted clip directly in one pass; audio is always dropped, since the source tool this is ported from is silent-GIF/loop focused and has no audio-preserving path of its own. The same trim-span and pixel limits apply. " +
         'Frame extraction for GIF approximates the source\'s exact evenly-spaced-timestamp sampling with ffmpeg\'s own fps-filter resampling of the decoded stream (documented in code as a deliberate simplification, not a literal port) -- for most clips this is visually indistinguishable, but timing will not be bit-identical to the browser tool\'s output for the same input. ' +
         'Returns the encoded file (inline if small, otherwise a download link) plus a JSON stats object: frameCount (gif only), width, height, byteSize, requestedFps, actualFps, delayCentiseconds (gif only), format, outputPixels, maxOutputPixels, and more. An oversized request, a trim under 0.25s, an undecodable video, or an unsupported codec is reported as a tool error naming the problem, never a crash.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: videoGifOutputSchema,
       inputSchema: {
         videoBase64: z.string().min(1).describe(`Base64-encoded source video bytes (not a file path or URL). The decoded video must be at most ${MAX_INPUT_VIDEO_BYTES / 1e6} MB; larger payloads are rejected before any decoding happens.`),
         mimeType: z.string().min(1).describe('The source video\'s mime type, e.g. "video/quicktime" or "video/mp4". Used only to pick a temp-file extension; the actual format is content-sniffed by ffmpeg.'),

@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported from nginx/sites/goai/tools/body-fat.html's inline <script>. That
 // page keeps its UI-facing copy in a JSON strings block (id="bf-strings");
@@ -139,6 +140,35 @@ const inputSchema = z
     path: ['hip'],
   });
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const bmiOutputSchema = {
+  bmi: z.number().nullable().describe('Body mass index to 1 decimal place, or null if it could not be computed.'),
+  bmiCategory: z
+    .string()
+    .nullable()
+    .describe("The WHO band that BMI falls in, e.g. 'Underweight', 'Normal', 'Overweight', 'Obese'. Null when bmi is null."),
+  bodyFatPercent: z
+    .number()
+    .nullable()
+    .describe('US Navy tape-method body fat as a whole percent, clamped to 2-75. Null when the measurements make the formula undefined (see warnings).'),
+  bodyFatRaw: z
+    .number()
+    .nullable()
+    .describe('The same figure before clamping and rounding, to 2 decimals -- this is the one that reveals an implausible measurement. Null in the same case as bodyFatPercent.'),
+  leanMass: z
+    .number()
+    .nullable()
+    .describe('Lean mass in the same unit system as the input (kg for metric, lb for imperial). Null when body fat could not be computed.'),
+  units: z.enum(['metric', 'imperial']).describe("Which unit system leanMass is expressed in -- otherwise the bare number is ambiguous."),
+  warnings: z
+    .array(z.string())
+    .describe('Plain-language cautions: the measurements make the formula undefined, or the result sits outside the range it was fitted on. Empty when neither applies.'),
+};
+
 function register(server) {
   server.registerTool(
     'calculate_bmi_and_body_fat',
@@ -146,6 +176,8 @@ function register(server) {
       title: 'BMI and Navy body fat calculator',
       description:
         "Computes BMI (with its standard weight-category label) and body fat percentage via the US Navy circumference method from height, weight, neck, waist, and (for females) hip measurements, plus the resulting lean body mass. The Navy equations are fitted in inches, so metric inputs are converted internally; the body-fat percentage is clamped to 2-75% and rounded to a whole number, matching GO AI's body-fat tool page exactly, including its 'waist must exceed neck (and hip, for the female formula)' impossible-input warning and its out-of-fitted-range caution for raw results below 4% or above 60%.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: bmiOutputSchema,
       inputSchema,
     },
     async (args) => {

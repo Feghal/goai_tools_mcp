@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const { withThrottle } = require('../../utils/itunesThrottle');
 
 // Port of nginx/sites/goai/tools/appstore.html ("App Store storefront
@@ -257,6 +258,68 @@ async function compareAcrossMarkets({ appId, storefronts }) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const searchOutputSchema = {
+  term: z.string().describe('The search term, echoed back.'),
+  country: z.string().describe('The storefront that was searched.'),
+  entity: z.string().describe('Which catalogue was searched (iPhone, iPad or Mac software).'),
+  resultCount: z.number().int().describe("Apple's own reported match count for the query."),
+  capped: z
+    .boolean()
+    .describe("True when the result hit the Search API's 200-per-request ceiling, meaning there are likely more matches than were returned."),
+  apps: z
+    .array(
+      z.object({
+        appId: z.string().nullable().describe('Numeric App Store app ID as a string, or null if Apple omitted it.'),
+        title: z.string().nullable().describe('App name on this storefront.'),
+        seller: z.string().nullable().describe('Publisher name.'),
+        price: z.string().nullable().describe('Formatted price as Apple returns it, including the currency symbol.'),
+        currency: z.string().nullable().describe('ISO currency code for that price.'),
+        rating: z.number().nullable().describe('Average user rating, or null when the app has none on this storefront.'),
+        ratingCount: z.number().int().describe('Number of ratings; 0 when Apple reports none.'),
+        storeLink: z.string().nullable().describe('Canonical apps.apple.com URL for the listing.'),
+        artworkUrl: z.string().nullable().describe('100px artwork URL.'),
+      })
+    )
+    .describe('The matching apps. Every field is nullable because Apple omits fields per storefront rather than returning empty values.'),
+};
+
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const compareOutputSchema = {
+  appId: z.string().describe('The app ID that was looked up, extracted from the input if a URL was given.'),
+  checked: z.number().int().describe('How many storefronts were queried.'),
+  found: z.number().int().describe('How many of them have the app listed.'),
+  failed: z.number().int().describe('How many lookups errored rather than returning a verdict.'),
+  distinctTitles: z
+    .number()
+    .int()
+    .describe('Number of different titles seen across the storefronts that resolved -- more than one means the listing is localized.'),
+  rows: z
+    .array(
+      z.object({
+        country: z.string().describe('Storefront code.'),
+        countryName: z.string().describe('Storefront name.'),
+        available: z.boolean().describe('Whether the app is listed on this storefront. When false, the listing fields below are absent.'),
+        title: z.string().nullable().optional().describe('App name on this storefront; present only when available.'),
+        price: z.string().nullable().optional().describe('Formatted local price; present only when available.'),
+        currency: z.string().nullable().optional().describe('ISO currency code; present only when available.'),
+        rating: z.number().nullable().optional().describe('Average rating on this storefront; present only when available.'),
+        ratingCount: z.number().int().optional().describe('Rating count on this storefront; present only when available.'),
+        storeLink: z.string().nullable().optional().describe('Local listing URL; present only when available.'),
+        error: z.string().optional().describe('Why this storefront could not be checked. Present only on a failed lookup, which also reports available:false.'),
+      })
+    )
+    .describe('One row per requested storefront, in the order given. A row is one of three shapes: listed, not listed, or errored.'),
+};
+
 function register(server) {
   server.registerTool(
     'appstore_search',
@@ -264,6 +327,8 @@ function register(server) {
       title: 'Search an App Store storefront',
       description:
         'Searches one Apple App Store country storefront by term, via Apple\'s public iTunes Search API (the same request the GO AI "App Store storefront checker" tool makes from the browser), and returns matching apps with title, seller, price, rating and a direct App Store link. Returns up to 200 results, Apple\'s own per-request maximum -- a result of exactly 200 likely means more exist. Results are ordered by Apple\'s internal relevance, which does not match the ranked list shown in the App Store app, so this cannot be used to track keyword rank.',
+      annotations: toolAnnotations.NETWORK,
+      outputSchema: searchOutputSchema,
       inputSchema: {
         term: z
           .string()
@@ -302,6 +367,8 @@ function register(server) {
       title: 'Compare an App Store listing across markets',
       description:
         'Looks up one app (by numeric App Store id, or a pasted apps.apple.com URL) in up to 30 App Store storefronts in a single call, via Apple\'s public iTunes Lookup API, and reports per-market availability, localized title, price and rating. Capped at 30 storefronts per call by design -- there are 173 total App Store storefronts, and this deliberately never sweeps all of them in one call; call again with a different storefronts list to cover more markets. Lookups run one at a time with a short pause between each (matching the pacing the source browser tool uses for its 30-market quick-compare), so a full 30-market call takes roughly ten seconds, not an instant burst.',
+      annotations: toolAnnotations.NETWORK,
+      outputSchema: compareOutputSchema,
       inputSchema: {
         appIdOrUrl: z
           .string()

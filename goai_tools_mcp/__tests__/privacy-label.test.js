@@ -103,15 +103,15 @@ describe('buildAppPrivacyLabel (pure logic, no MCP server)', () => {
   });
 });
 
-describe('goai_build_app_privacy_label tool registration', () => {
+describe('build_app_privacy_label tool registration', () => {
   test('registers exactly one tool and its handler returns structured, non-error content', async () => {
     const server = makeFakeServer();
     privacyLabel.register(server);
 
-    expect(Object.keys(server.tools)).toEqual(['goai_build_app_privacy_label']);
+    expect(Object.keys(server.tools)).toEqual(['build_app_privacy_label']);
     expect(privacyLabel.toolCount).toBe(1);
 
-    const res = await server.tools.goai_build_app_privacy_label.handler({ items: ['admob'] });
+    const res = await server.tools.build_app_privacy_label.handler({ items: ['admob'] });
     expect(res.isError).toBeUndefined();
     expect(res.structuredContent.trackingRequired).toBe(true);
     expect(res.structuredContent.sdkCount).toBe(1);

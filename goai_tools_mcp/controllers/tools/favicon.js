@@ -17,6 +17,7 @@
 const { z } = require('zod');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 
@@ -310,6 +311,35 @@ const inputSchema = {
     .describe('When true (default), the 192x192 and 512x512 manifest icons are padded: the artwork is shrunk to a centred 80%-width square on the background colour, matching Android\'s maskable-icon safe zone, and the manifest icons\' "purpose" is set to "maskable". When false, those two icons are the plain resized artwork with "purpose": "any".'),
 };
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const faviconOutputSchema = {
+  manifest: z.string().describe('A complete web app manifest as JSON text, ready to serve as site.webmanifest.'),
+  snippet: z.string().describe('The <link> and <meta> tags to paste into the page head, matching the files that were generated.'),
+  table: z
+    .array(
+      z.object({
+        file: z.string().describe('Generated filename.'),
+        sizes: z.string().describe('Pixel dimensions the file covers.'),
+        usedFor: z.string().describe('Which browser, platform or surface asks for this file.'),
+      })
+    )
+    .describe('Every generated file and what it is for, so the set can be checked without unzipping it.'),
+  sourceWidth: z.number().int().describe('Source image width in px.'),
+  sourceHeight: z.number().int().describe('Source image height in px.'),
+  squaredSide: z.number().int().describe('Side length of the square canvas the source was fitted onto, in px.'),
+  maskablePadding: z.boolean().describe('Whether the maskable icon was padded to survive Android\'s safe-zone crop.'),
+  themeColor: z.string().describe('Theme colour written into the manifest and meta tags.'),
+  backgroundColor: z.string().describe('Background colour written into the manifest.'),
+  warning: z
+    .string()
+    .nullable()
+    .describe('A quality caution about the source image, chiefly that it was not square or too small. Null when there is nothing to flag.'),
+};
+
 function register(server) {
   server.registerTool(
     'generate_favicon_set',
@@ -335,6 +365,8 @@ function register(server) {
         'warning when the source is smaller than 512px on its longer side (the 512 icon will be ' +
         'upscaled). Fails with a clear message rather than throwing if the input cannot be decoded ' +
         'as an image.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: faviconOutputSchema,
       inputSchema,
     },
     async (args) => {

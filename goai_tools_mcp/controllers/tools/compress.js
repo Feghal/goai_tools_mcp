@@ -3,6 +3,7 @@
 const { z } = require('zod');
 const sharp = require('sharp');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 
@@ -179,6 +180,71 @@ async function compressionCurve(input) {
   };
 }
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const compressOutputSchema = {
+  format: z.enum(['jpeg', 'webp', 'avif']).describe('Output format used.'),
+  quality: z.number().int().describe('Quality level the image was encoded at.'),
+  original: z
+    .object({
+      width: z.number().int().describe('Original width in px.'),
+      height: z.number().int().describe('Original height in px.'),
+      bytes: z.number().int().describe('Original file size in bytes.'),
+    })
+    .describe('The image as supplied.'),
+  working: z
+    .object({
+      width: z.number().int().describe('Width after the downscale, in px.'),
+      height: z.number().int().describe('Height after the downscale, in px.'),
+      maxDimension: z.number().int().describe('The longest-side cap that was applied.'),
+    })
+    .describe('The image after being fitted to maxDimension but before re-encoding. Never an enlargement.'),
+  compressed: z
+    .object({
+      width: z.number().int().describe('Output width in px.'),
+      height: z.number().int().describe('Output height in px.'),
+      bytes: z.number().int().describe('Output file size in bytes.'),
+    })
+    .describe('The returned file. Its bytes come back as a separate content block.'),
+  percentChange: z
+    .number()
+    .describe('Size change against the original as a percentage; negative means smaller. Can be positive when re-encoding an already-optimised file.'),
+};
+
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream.
+const compressionCurveOutputSchema = {
+  format: z.enum(['jpeg', 'webp', 'avif']).describe('Format every point was encoded in.'),
+  original: z
+    .object({
+      width: z.number().int().describe('Original width in px.'),
+      height: z.number().int().describe('Original height in px.'),
+      bytes: z.number().int().describe('Original file size in bytes.'),
+    })
+    .describe('The image as supplied.'),
+  working: z
+    .object({
+      width: z.number().int().describe('Width the curve was measured at, in px.'),
+      height: z.number().int().describe('Height the curve was measured at, in px.'),
+      maxDimension: z.number().int().describe('The longest-side cap that was applied before sampling.'),
+    })
+    .describe('The downscaled image every quality level was encoded from. The knee sits in the same place at either size, so this does not distort the curve.'),
+  points: z
+    .array(
+      z.object({
+        quality: z.number().int().describe('The quality level sampled.'),
+        bytes: z.number().int().describe('Encoded size at that quality, in bytes.'),
+        percentChange: z.number().describe('Size against the original as a percentage; negative means smaller.'),
+      })
+    )
+    .describe("The 14 fixed sample points, ascending by quality. The 'knee' -- where size stops dropping much per quality point -- is what this tool exists to locate. No image bytes are returned."),
+};
+
 function register(server) {
   server.registerTool(
     'image_compress',
@@ -186,6 +252,8 @@ function register(server) {
       title: 'Compress an image (JPEG/WebP/AVIF)',
       description:
         "Downscales an image to fit within a maximum dimension (default 1600px on the longer side, never enlarges -- matching GO AI's browser compressor tool) and re-encodes it as JPEG, WebP or AVIF at a given quality (1-100 scale, default 75). Input is base64-encoded image bytes (any format sharp/libvips can decode: JPEG, PNG, WebP, AVIF, GIF, TIFF, ...), not a file path or URL, capped at this server's input size limit. Returns the compressed image bytes plus a stats object: original and compressed dimensions and byte sizes, and the percent size change (positive = smaller, negative = the re-encode came out bigger, which happens when compressing an already-small, already-compressed image). Re-encoding always strips EXIF/ICC metadata, exactly like the source tool.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: compressOutputSchema,
       inputSchema: {
         imageBase64: z
           .string()
@@ -233,6 +301,8 @@ function register(server) {
       title: 'Image compression size-vs-quality curve',
       description:
         `Analysis-only tool (no image bytes returned): re-encodes an image at the same fixed 14 quality levels GO AI's browser compressor samples to draw its size-against-quality curve (5, 10, ..., through 100 -- see the qualities in each returned point), for JPEG, WebP or AVIF, and reports the resulting byte size and percent change at each level. The image is first downscaled to fit within maxDimension (default ${DEFAULT_MAX_DIMENSION}px on the longer side, never enlarged), exactly as the source's working canvas is, then every quality level is encoded one at a time. Because this repeats the encode 14 times, its maxDimension is capped at ${MAX_CURVE_MAX_DIMENSION}px -- lower than image_compress's ${MAX_MAX_DIMENSION}px -- which costs nothing in practice, since the knee of the curve is a property of the image's content and sits in the same place at either size. Use this to find that 'knee' (where size stops dropping much per quality point) for a specific image, or image_compress to actually get the compressed bytes at one chosen quality. Input is base64-encoded image bytes, not a file path or URL.`,
+      annotations: toolAnnotations.PURE,
+      outputSchema: compressionCurveOutputSchema,
       inputSchema: {
         imageBase64: z
           .string()

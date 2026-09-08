@@ -1,6 +1,7 @@
 'use strict';
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 /* ---------------------------------------------------------------------------
  * OKLab / OKLCH math and the CSS Color 4 gamut-mapping algorithm, ported
@@ -312,6 +313,75 @@ function buildRamp(args) {
 /* ---------------------------------------------------------------------------
  * Registration.
  * ------------------------------------------------------------------------- */
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const oklchConvertOutputSchema = {
+  requested: z
+    .object({
+      l: z.number().describe('Requested lightness, 0-1.'),
+      c: z.number().describe('Requested chroma.'),
+      h: z.number().describe('Requested hue angle in degrees.'),
+    })
+    .describe('The OKLCH coordinates that were asked for, before any gamut mapping -- keep these to see how far the sRGB answer had to move.'),
+  oklchText: z.string().describe('The colour as a CSS oklch() declaration.'),
+  inGamut: z.boolean().describe('Whether the requested colour exists in sRGB.'),
+  mapped: z.boolean().describe('True when the colour was gamut-mapped to fit sRGB, meaning hex below is a near miss rather than the exact request.'),
+  hex: z.string().describe('The sRGB result as a hex string.'),
+  rgb: z
+    .object({
+      r: z.number().int().describe('Red channel, 0-255.'),
+      g: z.number().int().describe('Green channel, 0-255.'),
+      b: z.number().int().describe('Blue channel, 0-255.'),
+    })
+    .describe('The same colour as 8-bit sRGB channels.'),
+  rgbText: z.string().describe('The colour as a CSS rgb() declaration.'),
+  hsl: z
+    .object({
+      h: z.number().describe('Hue in degrees.'),
+      s: z.number().describe('Saturation as a percentage.'),
+      l: z.number().describe('Lightness as a percentage. Note this is HSL lightness, which is not OKLCH lightness.'),
+    })
+    .describe('The same colour in HSL, for code that still expects it.'),
+  hslText: z.string().describe('The colour as a CSS hsl() declaration.'),
+};
+
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const oklchRampOutputSchema = {
+  base: z
+    .object({
+      l: z.number().describe('Base lightness, 0-1.'),
+      c: z.number().describe('Base chroma.'),
+      h: z.number().describe('Base hue angle in degrees.'),
+    })
+    .describe('The OKLCH coordinates the ramp was generated from.'),
+  mode: z.enum(['hue', 'light', 'chroma']).describe('Which coordinate was varied across the steps, echoed from the input.'),
+  steps: z
+    .array(
+      z.object({
+        index: z.number().int().describe('0-based position in the ramp.'),
+        oklch: z
+          .object({
+            l: z.number().describe('Lightness at this step.'),
+            c: z.number().describe('Chroma at this step.'),
+            h: z.number().describe('Hue at this step.'),
+          })
+          .describe('This step\'s OKLCH coordinates.'),
+        oklchText: z.string().describe('This step as a CSS oklch() declaration.'),
+        hex: z.string().describe('This step as an sRGB hex string.'),
+        mapped: z.boolean().describe('True when this particular step fell outside sRGB and was gamut-mapped.'),
+      })
+    )
+    .describe('The ramp in order. Because each step is mapped independently, some can be mapped and others not.'),
+  css: z.string().describe('The whole ramp as CSS custom properties, ready to paste into a stylesheet.'),
+};
+
 function register(server) {
   server.registerTool(
     'oklch_convert',
@@ -319,6 +389,8 @@ function register(server) {
       title: 'Convert an OKLCH / hex / RGB / HSL color',
       description:
         "Converts a color to and from OKLCH. Accepts either a CSS color string via `color` (hex, rgb()/rgba(), hsl()/hsla(), or oklch()) or explicit OKLCH lightness/chroma/hue via l, c and h — supply one or the other. Returns the canonical oklch() text for the color exactly as requested, plus its sRGB-gamut-mapped hex/rgb()/hsl() equivalents. Gamut mapping follows the CSS Color 4 algorithm (bisecting on chroma at constant lightness and hue, not channel-clipping) and only targets sRGB — there is no P3 or Rec2020 support.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: oklchConvertOutputSchema,
       inputSchema: convertInputSchema,
     },
     async (args) => {
@@ -336,6 +408,8 @@ function register(server) {
       title: 'Build an OKLCH swatch ramp / CSS custom-property block',
       description:
         "Builds a perceptually even OKLCH swatch ramp from a base color (same `color` or l/c/h input as oklch_convert) by sweeping one channel — hue, lightness, or chroma — while holding the other two fixed, so every swatch keeps the same visual weight (this is the reason to build a ramp in OKLCH rather than HSL). Each step is gamut-mapped to sRGB with the CSS Color 4 chroma-reduction algorithm and returned with its hex preview, plus a ready-to-paste `:root { --name-1: oklch(...); ... }` CSS block.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: oklchRampOutputSchema,
       inputSchema: rampInputSchema,
     },
     async (args) => {

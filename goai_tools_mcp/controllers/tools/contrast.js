@@ -1,6 +1,7 @@
 'use strict';
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Ported line-for-line from nginx/sites/goai/tools/contrast.html's inline
 // <script> (the client-side WCAG/APCA contrast checker + hue-preserving
@@ -258,6 +259,66 @@ function findNearestPassingColor({ foreground, background, adjust, target }) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const contrastOutputSchema = {
+  foregroundHex: z.string().describe('The foreground colour normalised to hex.'),
+  backgroundHex: z.string().describe('The background colour normalised to hex.'),
+  ratio: z.number().describe('WCAG 2 contrast ratio, from 1 (identical) to 21 (black on white).'),
+  ratioDisplay: z.string().describe("That ratio formatted the way it is conventionally written, e.g. '4.53:1'."),
+  apca: z
+    .object({
+      lc: z.number().describe('APCA lightness contrast, signed -- the sign encodes which of the two colours is lighter.'),
+      lcAbs: z.number().describe('Absolute Lc value, which is what the APCA thresholds are stated against.'),
+      polarity: z.string().describe('Whether this is light text on dark, or dark text on light.'),
+    })
+    .describe('The APCA (WCAG 3 draft) reading, which models perceived contrast rather than a pure luminance ratio and often disagrees with WCAG 2.'),
+  cases: z
+    .array(
+      z.object({
+        key: z.string().describe('Stable identifier for the use case.'),
+        label: z.string().describe("Human-readable name, e.g. 'Normal text'."),
+        need: z.string().describe('What this case requires, written out.'),
+        aaThreshold: z.number().describe('The AA ratio this case must meet.'),
+        aaaThreshold: z.number().nullable().describe('The AAA ratio, or null for cases WCAG defines no AAA level for (UI components).'),
+        passAA: z.boolean().describe('Whether the pair meets AA for this case.'),
+        passAAA: z.boolean().nullable().describe('Whether it meets AAA, or null where no AAA level exists.'),
+      })
+    )
+    .describe('The pair judged against each WCAG use case, since one ratio passes for large text and fails for body copy.'),
+  summary: z
+    .object({
+      passed: z.number().int().describe('How many graded checks passed.'),
+      graded: z.number().int().describe('How many checks were gradeable (a null AAA level is not counted).'),
+      allPass: z.boolean().describe('True only when every gradeable check passed.'),
+    })
+    .describe('The tally, so a caller can gate on one boolean instead of walking cases.'),
+};
+
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const nearestOutputSchema = {
+  adjust: z.enum(['foreground', 'background']).describe('Which colour was moved, echoed from the input.'),
+  targetRatio: z.number().describe('The contrast ratio being aimed for, resolved from the named target or given directly.'),
+  currentRatio: z.number().describe('The ratio the original pair had.'),
+  alreadyPassing: z.boolean().describe('True when the input pair already met the target and nothing needed moving.'),
+  found: z.boolean().describe('Whether a passing colour was reached. False means the target is unreachable by lightness alone from this starting colour.'),
+  movedHex: z.string().nullable().describe('The adjusted colour in hex, or null when nothing was moved or nothing was found.'),
+  newRatio: z.number().nullable().describe('The contrast ratio after the move, or null when there was no move.'),
+  lightnessStepPercent: z
+    .number()
+    .nullable()
+    .describe('How far the colour had to travel in lightness, as a percentage -- a large value means the passing colour is no longer the colour that was asked for.'),
+  direction: z.string().nullable().describe('Whether the colour was lightened or darkened; null when nothing moved.'),
+  message: z.string().describe('Plain-language summary of the outcome, including why no colour was found when found is false.'),
+};
+
 function register(server) {
   server.registerTool(
     'check_contrast',
@@ -265,6 +326,8 @@ function register(server) {
       title: 'WCAG/APCA contrast checker',
       description:
         "Computes the WCAG 2.x contrast ratio between a foreground (text) and background hex colour, and reports AA/AAA pass or fail for normal text, large text, and UI components (icons/borders/focus rings) separately, since WCAG grades each case on its own threshold. Also reports the newer APCA Lc figure alongside it for information -- APCA is not yet what conformance is measured against, only the WCAG ratio is.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: contrastOutputSchema,
       inputSchema: {
         // badHexError() echoes the rejected value straight back into its
         // message, so an unbounded colour field is a straight input->output
@@ -289,6 +352,8 @@ function register(server) {
       title: 'Nearest WCAG-passing colour (hue-preserving)',
       description:
         "Given a foreground/background hex pair, moves only the lightness of one side (hue and saturation held fixed) in the smallest step that clears a target WCAG contrast ratio, so a failing brand colour can be fixed without draining its hue. Defaults to the 4.5:1 normal-text AA threshold, matching the source page's fix buttons; pass a named threshold ('normal-aa', 'normal-aaa', 'large-aa', 'large-aaa', 'ui-aa') or a custom numeric ratio to target something else. Reports found:false when even pure black or white in that hue cannot reach the target -- that pair needs a different hue, not a different lightness.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: nearestOutputSchema,
       inputSchema: {
         foreground: z.string().min(1).max(MAX_COLOR_CHARS).describe('Foreground/text colour as a hex string, e.g. "#6b7280" (3- or 6-digit, leading # optional).'),
         background: z.string().min(1).max(MAX_COLOR_CHARS).describe('Background colour as a hex string, same format as foreground.'),

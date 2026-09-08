@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // Port of nginx/sites/goai/tools/privacy-label.html ("App privacy label
 // builder"). The source ships its decision table and copy as two
@@ -225,13 +226,51 @@ function buildAppPrivacyLabel(itemIds) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const privacyLabelOutputSchema = {
+  trackingRequired: z
+    .boolean()
+    .describe('True when at least one chosen item implies App Tracking Transparency / the "Used to Track You" declaration.'),
+  dataTypeCount: z.number().int().describe('Total number of distinct data types to declare across all groups.'),
+  sdkCount: z.number().int().describe('How many distinct SDKs/features were considered, after repeats collapse.'),
+  trackingNote: z.string().describe('Explanation of the tracking verdict and what it obliges.'),
+  vendorDocumentationAsOf: z
+    .string()
+    .describe('The date this mapping table was last checked against vendor documentation -- SDKs change what they collect, so this bounds how much to trust the answer.'),
+  disclaimer: z.string().describe('Standing note that this is a deterministic lookup, not a code scan and not compliance advice.'),
+  groups: z
+    .array(
+      z.object({
+        id: z.string().describe('Stable identifier for the App Store Connect group.'),
+        label: z.string().describe("The group name as Apple presents it, e.g. 'Identifiers', 'Usage Data'."),
+        dataTypes: z
+          .array(
+            z.object({
+              id: z.string().describe('Stable identifier for the data type.'),
+              label: z.string().describe('The data type as Apple names it.'),
+              causedBy: z.array(z.string()).describe('Which of the chosen items pulled this data type in -- the audit trail for the entry.'),
+            })
+          )
+          .describe('The data types to declare under this group.'),
+      })
+    )
+    .describe('Data types to declare, grouped the way App Store Connect groups them.'),
+  checklistText: z.string().describe('The whole result as pasteable plain text, for dropping into a ticket or a submission checklist.'),
+};
+
 function register(server) {
   server.registerTool(
-    'goai_build_app_privacy_label',
+    'build_app_privacy_label',
     {
       title: 'Build an App Store privacy label checklist',
       description:
         "Given which SDKs and features are present in an iOS app (analytics, crash reporting, ads, attribution, accounts, in-app purchases, location, HealthKit, contacts, search, etc.), returns the App Store Connect privacy data types those items most likely require declaring, grouped the way Apple groups them (Contact info, Identifiers, Usage data, Diagnostics, ...), each with the reason (which chosen item(s) caused it), plus whether App Tracking Transparency/tracking applies and the vendor-documentation date the mapping was checked against. This is a fixed, deterministic lookup table shipped with GO AI's privacy-label-builder page -- not a code scanner and not compliance advice. SDKs change what they collect (sometimes in a minor version) and app configuration changes it further, so treat the result as a starting checklist to verify against each SDK's current documentation, not an answer to submit as-is.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: privacyLabelOutputSchema,
       inputSchema: {
         items: z
           .array(z.enum(SDK_IDS))

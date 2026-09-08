@@ -5,6 +5,7 @@ const path = require('path');
 const { z } = require('zod');
 const sharp = require('sharp');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 const zipUtil = require('../../utils/zip');
@@ -262,6 +263,36 @@ const inputSchema = z.object({
     .describe('When true and more than one file produced output bytes (converted or passed-through), bundle them into one converted.zip instead of returning each file as its own separate output.'),
 });
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const heicConvertOutputSchema = {
+  format: z.enum(['image/jpeg', 'image/png']).describe('Output MIME type requested for the batch.'),
+  results: z
+    .array(
+      z.object({
+        filename: z.string().describe('The input filename, echoed back so rows line up with what was sent.'),
+        outputFilename: z.string().nullable().describe('Name of the produced file, or null when this input failed.'),
+        status: z
+          .enum(['converted', 'already_converted', 'failed'])
+          .describe("Per-file outcome. 'already_converted' means the input was already a JPEG or PNG and was passed through untouched rather than re-encoded."),
+        mimeType: z.string().nullable().describe('MIME type of the produced file, or null when this input failed.'),
+        width: z
+          .number()
+          .int()
+          .nullable()
+          .describe('Decoded width in px. Null for a failed file, and also for a passed-through one, which is never decoded.'),
+        height: z.number().int().nullable().describe('Decoded height in px, on the same terms as width.'),
+        inputBytes: z.number().int().describe('Size of the supplied file in bytes.'),
+        outputBytes: z.number().int().nullable().describe('Size of the produced file in bytes, or null when this input failed.'),
+        error: z.string().optional().describe('Why this file could not be converted. Present only on a failed row -- one bad file does not fail the batch.'),
+      })
+    )
+    .describe('One row per input file, in the order supplied. Rows come in three shapes depending on status.'),
+};
+
 function register(server) {
   server.registerTool(
     'convert_heic_to_jpg_png',
@@ -269,6 +300,8 @@ function register(server) {
       title: 'Convert HEIC/HEIF to JPG or PNG',
       description:
         'Converts iPhone HEIC/HEIF photos to JPEG or PNG, decoding with a WebAssembly build of libheif (LGPL-3.0) and re-encoding with sharp -- the same pipeline as GO AI\'s browser-based HEIC converter tool, run server-side. Accepts 1-50 files as {filename, dataBase64} (each up to ~30MB decoded); every file is byte-sniffed by its actual magic bytes, never by filename extension or claimed mime type, so an iPhone photo that iOS already delivered as a JPEG (picked from Photos rather than Files) is detected and reported as already_converted -- passed through unchanged, not re-encoded -- while real HEIC/HEIF input is decoded and re-encoded to the requested format (JPEG with a caller-set quality 50-100, or lossless PNG). Any orientation stored on the HEIC is applied automatically during decode, so output comes out right-side up. Metadata (EXIF: GPS, timestamp, camera) is not carried over, matching the source page. Each converted or passed-through file is returned individually (inline if small, as a download link if large), or bundled as one converted.zip when bundleAsZip is true and more than one file produced output; a file that fails to decode is reported with status failed and an error message rather than aborting the batch. The JSON report lists status, dimensions, and before/after byte sizes for every input file, in input order.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: heicConvertOutputSchema,
       inputSchema,
     },
     async (args) => {

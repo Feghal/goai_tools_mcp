@@ -2,6 +2,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 
 // Ported from nginx/sites/goai/tools/strings-checker.html's inline <script>
@@ -330,6 +331,76 @@ function checkStringsFiles(input) {
   };
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const stringsCheckerOutputSchema = {
+  baseFile: z.string().describe('Which file every other file was compared against, whether given or chosen automatically.'),
+  fileCount: z.number().int().describe('How many files were compared.'),
+  keysInBase: z.number().int().describe('Number of keys in the base file -- the denominator for the translation coverage.'),
+  issueCount: z.number().int().describe('Total findings across every category below. Zero means the files agree.'),
+  missingKeys: z
+    .array(
+      z.object({
+        key: z.string().describe('The key absent from this file.'),
+        file: z.string().describe('The file missing it.'),
+        baseValue: z.string().describe("The base file's value for that key, i.e. the string still to be translated."),
+      })
+    )
+    .describe('Keys present in the base file but absent from another -- untranslated strings that will fall back at runtime.'),
+  extraKeys: z
+    .array(
+      z.object({
+        key: z.string().describe('The key not present in the base file.'),
+        file: z.string().describe('The file carrying it.'),
+        value: z.string().describe('Its value in that file.'),
+      })
+    )
+    .describe('Keys in a translation that the base file no longer has -- usually left behind by a rename or a deletion.'),
+  duplicateValues: z
+    .array(
+      z.object({
+        file: z.string().describe('The file containing the duplicates.'),
+        value: z.string().describe('The repeated value.'),
+        keys: z.string().describe('The keys sharing it, comma-separated.'),
+      })
+    )
+    .describe('Keys within one file that share a value, which is how a copy-paste translation error looks.'),
+  identicalToBase: z
+    .array(
+      z.object({
+        key: z.string().describe('The key whose value matches the base file.'),
+        file: z.string().describe('The translation file.'),
+        value: z.string().describe('The shared value.'),
+      })
+    )
+    .describe('Keys whose translation is byte-identical to the base language. Sometimes correct (a proper noun), often a forgotten translation.'),
+  badLines: z
+    .array(
+      z.object({
+        file: z.string().describe('The file containing the line.'),
+        line: z.number().int().describe('1-based line number.'),
+        text: z.string().describe('The line as written, so it can be found and fixed.'),
+      })
+    )
+    .describe('Lines that are neither a comment, blank, nor a parseable key/value pair -- typically a missing semicolon or an unescaped quote.'),
+  missingKeysStrings: z
+    .string()
+    .describe('Every missing key formatted as ready-to-paste .strings entries with the base value, so the gap can be filled without retyping. Empty when nothing is missing.'),
+  files: z
+    .array(
+      z.object({
+        name: z.string().describe('Filename as given.'),
+        encoding: z.string().describe('The encoding the file was decoded as -- .strings files are frequently UTF-16, and a wrong guess here explains a zero key count.'),
+        keyCount: z.number().int().describe('Keys parsed from this file.'),
+        badLineCount: z.number().int().describe('Unparseable lines in this file.'),
+      })
+    )
+    .describe('Per-file summary, including the base file.'),
+};
+
 function register(server) {
   server.registerTool(
     'check_strings_files',
@@ -337,6 +408,8 @@ function register(server) {
       title: 'iOS .strings localization checker',
       description:
         'Compares two or more iOS Localizable.strings files (sent as base64-encoded raw file bytes, not text) against a base file and reports keys missing from each other file, keys present in another file but not the base ("extra", reported but not counted toward the issue total), values byte-identical to the base (often untranslated, sometimes intentionally so), duplicate values under different keys within the same file (case- and trailing-punctuation-insensitive), and lines that fail to parse with their line number. Sniffs a UTF-8 or UTF-16 LE/BE byte-order mark per file so files exported by Xcode in UTF-16 decode correctly instead of producing a wall of parse errors. Does not support the newer .xcstrings JSON catalogue format, and does not check plural rules or placeholder (%@/%d) consistency between files -- it is a pure key/value diff.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: stringsCheckerOutputSchema,
       inputSchema: {
         files: z
           .array(

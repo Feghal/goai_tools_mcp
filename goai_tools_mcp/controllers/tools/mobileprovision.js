@@ -3,6 +3,7 @@
 const { z } = require('zod');
 const { DOMParser } = require('@xmldom/xmldom');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 
 // Ported from nginx/sites/goai/tools/mobileprovision.html. A .mobileprovision
@@ -268,6 +269,63 @@ function inspectMobileprovision(base64) {
   return buildReport(parsed, xml);
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+//
+// Three fields are deliberately typed loose (z.unknown): teamIdentifier,
+// platform and each device entry are reflected straight back out of a
+// caller-supplied plist, so their real type is whatever that file held. A
+// tighter declaration here would reject an unusual but perfectly readable
+// profile, which is the one failure mode this tool must not have.
+const mobileprovisionOutputSchema = {
+  ok: z
+    .literal(true)
+    .describe('Always true on a readable profile. An unreadable file, a file with no embedded plist, or a plist that will not parse comes back as an error result instead, with the reason as its text.'),
+  name: z.string().nullable().describe("The profile's name, or null if the plist omits it."),
+  appIdName: z.string().nullable().describe('The App ID name registered with the profile.'),
+  applicationIdentifier: z
+    .string()
+    .nullable()
+    .describe("The application-identifier entitlement, i.e. team ID plus bundle ID -- the field that says what this profile actually signs."),
+  teamName: z.string().nullable().describe('Developer team name.'),
+  teamIdentifier: z.unknown().describe('Team identifiers from the plist, normally an array of one team ID string. Null when absent.'),
+  uuid: z.string().nullable().describe("The profile's UUID."),
+  platform: z.unknown().describe("Platforms the profile covers, normally an array such as ['ios']. Null when absent."),
+  createdDate: z.string().nullable().describe('Creation date as an ISO 8601 string, or null when absent or unparseable.'),
+  expirationDate: z.string().nullable().describe('Expiry date as an ISO 8601 string, or null when absent or unparseable.'),
+  timeToLiveDays: z.number().nullable().describe('The profile\'s TimeToLive in days, or null when absent.'),
+  expiry: z
+    .object({
+      status: z
+        .enum(['valid', 'expiring_soon', 'expired', 'unknown'])
+        .describe("Expiry verdict; 'expiring_soon' means 30 days or fewer remain, 'unknown' means the profile carried no readable expiry date."),
+      daysRemaining: z.number().nullable().describe('Days until expiry, negative once expired. Null when status is unknown.'),
+      message: z.string().describe('That verdict written out with the date. An empty string when status is unknown.'),
+    })
+    .describe('Whether this profile still works, which is the question most callers are actually asking.'),
+  profileType: z
+    .object({
+      kind: z
+        .enum(['development', 'enterprise', 'app_store'])
+        .describe('Profile kind, inferred from the registered-device list and the ProvisionsAllDevices flag -- not from a field that states it, because none does.'),
+      description: z.string().describe('What that kind means for installing the build.'),
+    })
+    .describe('Development/ad hoc vs. enterprise vs. App Store distribution.'),
+  certificateCount: z
+    .number()
+    .int()
+    .describe('How many signing certificates are embedded. The certificates themselves are not decoded -- only counted.'),
+  deviceCount: z.number().int().describe('Number of registered device UDIDs; 0 for an App Store or enterprise profile.'),
+  devices: z.array(z.unknown()).describe('The registered device UDIDs, normally strings. Empty when the profile registers none.'),
+  entitlements: z
+    .record(z.string(), z.unknown())
+    .describe('The full entitlements dictionary verbatim from the profile, keys and values as the plist held them.'),
+  rawPlistXml: z.string().describe('The embedded property list as raw XML, for anything this report does not surface.'),
+};
+
 function register(server) {
   server.registerTool(
     'inspect_mobileprovision',
@@ -275,6 +333,8 @@ function register(server) {
       title: 'Inspect a provisioning profile',
       description:
         "Reads an iOS/macOS provisioning profile (.mobileprovision or .provisionprofile, given as base64) by byte-searching its CMS/PKCS7-signed container for the embedded '<?xml ... </plist>' property list and parsing that XML -- it never validates or decodes the cryptographic signature, and does not report on the embedded certificates beyond how many there are. Reports expiry status and days remaining, profile type (development/ad hoc vs. enterprise vs. App Store distribution, classified only from the registered-device list and the ProvisionsAllDevices flag), team and application identifiers, the full entitlements dictionary, and the count and UDIDs of registered devices. Returns a structured { ok: false, error, message } result (not a thrown error) for an unreadable input, a file with no embedded plist, or a plist that fails to parse.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: mobileprovisionOutputSchema,
       inputSchema: {
         base64: z.string().min(1).describe('Base64-encoded raw bytes of the .mobileprovision or .provisionprofile file.'),
       },

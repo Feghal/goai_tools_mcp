@@ -7,6 +7,7 @@
 
 const { z } = require('zod');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 
 // SIGS in the source, in the exact order the <select> lists them.
 const SIG_PRESETS = ['4/4', '3/4', '2/4', '6/8', '5/4', '7/8', '12/8'];
@@ -204,6 +205,48 @@ function computeBpmDelay(input) {
   return result;
 }
 
+// The shape of the JSON in structuredContent. Declared so an agent can
+// read the result without parsing prose -- and, because the SDK validates
+// every success against it, so a handler that quietly stops returning a
+// field fails here instead of downstream. Nullable fields below are the
+// ones the computation genuinely leaves empty, not defensive padding.
+const bpmOutputSchema = {
+  bpm: z.number().describe('The tempo the table was computed at, in beats per minute.'),
+  bpmSource: z
+    .string()
+    .describe('Where that tempo came from: given directly, or averaged from tap times or tap intervals -- worth surfacing, since a tapped tempo carries the tapper\'s error.'),
+  timeSignature: z
+    .object({
+      beats: z.number().int().describe('Beats per bar (the numerator).'),
+      unit: z.number().int().describe('Note value that gets the beat (the denominator).'),
+      label: z.string().describe("The signature written out, e.g. '4/4'."),
+    })
+    .describe('The time signature used to size a bar.'),
+  barDurationSeconds: z.number().describe('Length of one bar in seconds at this tempo and signature.'),
+  delayTable: z
+    .array(
+      z.object({
+        division: z.number().int().describe('The note division, as its denominator (4 = quarter note, 8 = eighth, and so on).'),
+        label: z.string().describe('That division written out.'),
+        straightMs: z.number().describe('Delay time in milliseconds for the straight note.'),
+        dottedMs: z.number().describe('Dotted variant: 1.5x the straight time.'),
+        tripletMs: z.number().describe('Triplet variant: two thirds of the straight time.'),
+        hz: z.number().describe('The same interval expressed as a frequency, for setting an LFO rate rather than a delay.'),
+      })
+    )
+    .describe('One row per requested division, each with straight, dotted and triplet timings.'),
+  // Both keys are absent unless the caller asked for the conversion by
+  // supplying one of them -- the handler sets the pair or neither.
+  bars: z
+    .number()
+    .optional()
+    .describe('The bar count that seconds corresponds to. Present only when bars or seconds was supplied.'),
+  seconds: z
+    .number()
+    .optional()
+    .describe('Duration in seconds of that many bars at this tempo. Present only when bars or seconds was supplied.'),
+};
+
 function register(server) {
   server.registerTool(
     'bpm_delay_calculator',
@@ -211,6 +254,8 @@ function register(server) {
       title: 'BPM tap tempo & delay time calculator',
       description:
         "Resolves a musical tempo — either a direct BPM, or a set of tap timestamps/intervals run through the same median-filtered outlier rejection and 2-second session-reset logic as GO AI's tap-tempo tool — then returns the full straight/dotted/triplet delay and LFO-rate table (ms and Hz) for a set of note divisions, plus bar-length and bars<->seconds conversion for a time signature. All arithmetic (not a real audio engine) — useful for setting delay/reverb/LFO times to a track's tempo.",
+      annotations: toolAnnotations.PURE,
+      outputSchema: bpmOutputSchema,
       inputSchema: {
         bpm: z.number().positive().optional().describe('Tempo in beats per minute, used directly and unrounded. Provide exactly one of bpm, tapTimesMs, or tapIntervalsMs.'),
         tapTimesMs: z

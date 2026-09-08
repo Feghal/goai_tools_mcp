@@ -3,6 +3,7 @@
 const { z } = require('zod');
 const sharp = require('sharp');
 const toolResult = require('../../utils/toolResult');
+const toolAnnotations = require('../../utils/toolAnnotations');
 const byteLimits = require('../../utils/byteLimits');
 const outputStore = require('../../utils/outputStore');
 const { zip } = require('../../utils/zip');
@@ -231,6 +232,34 @@ async function resizeImages(input) {
   };
 }
 
+// The shape of the JSON in structuredContent. This tool also returns the
+// generated file as a separate content block (inline image, embedded
+// resource, or a resource_link to GET /files/:token, whichever
+// utils/outputStore.js picks); the schema below covers the metadata half
+// only, which is what the handler has always put in structuredContent.
+const resizeOutputSchema = {
+  imagesIn: z.number().int().describe('How many source images were supplied.'),
+  filesOut: z.number().int().describe('How many files were produced, i.e. imagesIn x sizes.'),
+  sizes: z.number().int().describe('How many target sizes the chosen preset expands to.'),
+  preset: z.string().describe('The preset that was applied, echoed from the input.'),
+  fit: z.enum(['contain', 'cover', 'stretch']).describe('How each image was fitted to its target box.'),
+  paddingColor: z
+    .string()
+    .nullable()
+    .describe("The letterbox colour, which only applies to fit 'contain'. Null for 'cover' and 'stretch', where nothing is padded."),
+  outputs: z
+    .array(
+      z.object({
+        source: z.string().describe('Which input image this file came from.'),
+        file: z.string().describe('Path of the file inside the ZIP.'),
+        width: z.number().int().describe('Output width in px.'),
+        height: z.number().int().describe('Output height in px.'),
+        bytes: z.number().int().describe('Output size in bytes.'),
+      })
+    )
+    .describe('Every produced file, so the archive can be checked without unzipping it.'),
+};
+
 function register(server) {
   server.registerTool(
     'resize_images',
@@ -250,6 +279,8 @@ function register(server) {
         'resource_link (a batch ZIP is never small enough, or singular enough, to inline) -- fetch ' +
         'the link to get the archive. Per-file output dimensions and byte sizes are reported in ' +
         'the JSON result. Each input image (base64) is capped by this server\'s per-input byte limit.',
+      annotations: toolAnnotations.PURE,
+      outputSchema: resizeOutputSchema,
       inputSchema: {
         images: z
           .array(
