@@ -4,3 +4,4 @@ node_modules/
 .env.prod
 *.DS_Store
 goai_tools_mcp/.data/
+scripts/purge-ops-docs.sh
