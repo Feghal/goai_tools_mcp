@@ -15,8 +15,7 @@
 #
 #   docker network create goai_edge
 #
-# and add the same network to website_front/docker-compose.prod.yml (see
-# docs/DEPLOY.md). Then:
+# and add the same network to the front-door nginx's compose file. Then:
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
 
@@ -83,7 +82,8 @@ services:
     # calls are in flight, never how heavy any one of them is: two
     # simultaneous max-size video calls still OOM-kill this container
     # (measured, 2/2), and 16 is a long way above 2. That remains a "what
-    # this cannot do" in docs/DEPLOY.md, not something the front door fixed.
+    # this cannot do" -- a limit of the design, not something the front door
+    # fixed. The heavy gate below is what actually bounds it.
 
     # 400 MB, from the box's budget: 1024 MB total, ~450 MB reserved for the
     # OS, the dockerd daemon and the website's nginx, leaving ~570 MB. 400 MB
@@ -94,7 +94,8 @@ services:
     # Measured against the real linux/amd64 image: 140 MB idle, ~198 MB
     # resting inside a request, 326 MB at the worst legal call. That is 74 MB
     # of headroom on a single call. It is NOT enough headroom for two
-    # concurrent heavy calls — see "What this cannot do" in docs/DEPLOY.md.
+    # concurrent heavy calls, which is why HEAVY_TOOLS in
+    # goai_tools_mcp/utils/heavyGate.js serialises them to one at a time.
     #
     # The 260 MB between the 140 MB idle floor and this cap is also what sets
     # the front door's global limit_conn of 16: 260 / ~15 MB per in-flight
@@ -116,7 +117,7 @@ services:
     # longer than it would unthrottled, against a 125 s hard ceiling at the
     # Cloudflare edge. If wall clock turns out to be the binding constraint
     # on the real box, this is the knob — raise it to 0.9 before touching any
-    # per-tool bound, and re-run the timing check in docs/DEPLOY.md.
+    # per-tool bound, and re-measure the worst legal call afterwards.
     cpus: 0.75
 
     # Belt and braces for the quota above. CFS shares only matter under
